@@ -1,0 +1,310 @@
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import scipy.stats as stats
+import numpy as np
+from matplotlib.ticker import AutoMinorLocator
+from matplotlib.lines import Line2D  # Add this import
+import os
+import glob
+import matplotlib.image as mpimg
+import scikit_posthocs as sp
+import matplotlib.gridspec as gridspec  # Add this import
+
+# Add Arial font to matplotlib
+arial_font_path = '/content/drive/MyDrive/arial/ARIAL.TTF'  # Change this to the path where Arial font is located
+fm.fontManager.addfont(arial_font_path)
+plt.rcParams['font.family'] = 'Arial'
+plt.rcParams['font.sans-serif'] = 'Arial'
+
+# Improved file discovery function
+def discover_files(base_path):
+    file_paths = {
+        'noNP_day1': [], 'NPD_day1': [],
+        'noNP_day3': [], 'NPD_day3': []
+    }
+
+    for day_folder in ['day1', 'day3']:
+        day_path = os.path.join(base_path, day_folder)
+        all_files = glob.glob(os.path.join(day_path, '*features_organelles*.csv'))
+
+        for file_path in all_files:
+            file_name = os.path.basename(file_path).lower()
+            if 'nonp' in file_name or 'no_np' in file_name or 'no np' in file_name:
+                group = f'noNP_{day_folder}'
+            else:
+                group = f'NPD_{day_folder}'
+
+            sample_number = len(file_paths[group]) + 1
+            file_paths[group].append((f'Sample {sample_number}', file_path))
+
+    return file_paths
+
+# Define the base path where day1 and day3 folders are located
+base_path = '/content/drive/MyDrive/nellie_test/nellie_test_r1'
+
+# Discover files
+file_paths = discover_files(base_path)
+
+# Metrics to extract
+metrics = {
+    'lin_vel_mag_rel_mean': 'Linear Velocity (µm/s)',
+    'ang_vel_mag_rel_mean': 'Angular Velocity (µm/s)',
+    'branch_tortuosity_mean': 'Tortuosity',
+    'branch_aspect_ratio_mean': 'Aspect Ratio',
+    'branch_length_mean': 'Length (µm)',
+    'organelle_solidity_raw': 'Solidity',
+    'organelle_extent_raw': 'Extent',
+    'organelle_axis_length_min_raw': 'Minor Axis Length (µm)',
+    'organelle_axis_length_maj_raw': 'Major Axis Length (µm)',
+    'organelle_area_raw': 'Area (µm²)'
+}
+
+# Read and combine data
+def read_data(file_paths):
+    df_list = []
+    for group, paths in file_paths.items():
+        for sample, path in paths:
+            try:
+                temp_df = pd.read_csv(path)
+                temp_df['Group'] = group
+                temp_df['Path'] = path
+                temp_df['Sample'] = sample
+                df_list.append(temp_df)
+                print(f"Successfully read {path}")
+            except Exception as e:
+                print(f"Error reading {path}: {e}")
+
+    if not df_list:
+        print("No files were successfully read. Check the file paths and permissions.")
+        return None
+
+    return pd.concat(df_list, ignore_index=True)
+
+# Group data by file and compute mean of each metric
+def calculate_mean_by_file(df, metrics):
+    mean_df_list = []
+    for path in df['Path'].unique():
+        temp_df = df[df['Path'] == path]
+        mean_data = {f"{metric}_mean_1": temp_df[metric].mean() for metric in metrics}
+        mean_data['Group'] = temp_df['Group'].iloc[0]
+        mean_df_list.append(mean_data)
+    return pd.DataFrame(mean_df_list)
+
+# Function to add significance stars
+def add_significance_stars(p_value, ax, x1, x2, y, h):
+    # Thinner bars and closer spacing
+    ax.plot([x1, x1, x2, x2], [y, y+h, y+h, y],
+            lw=1, c='black')
+
+    # Determine significance stars
+    if p_value < 0.001:
+        stars = '***'
+    elif p_value < 0.01:
+        stars = '**'
+    elif p_value < 0.05:
+        stars = '*'
+    else:
+        stars = 'ns'
+
+    # Add stars
+    ax.text((x1+x2)*.5, y+h, stars,
+            ha='center', va='bottom',
+            fontsize=24)
+
+# Updated function to create improved box plot
+def create_improved_box_plot(mean_df, metric, ylabel, filename, p_values):
+    # Set figure size to be more compact
+    plt.figure(figsize=(6, 8))
+
+    # Prepare data for plotting
+    plot_data = mean_df[[f'{metric}_mean_1', 'Group']].copy()
+    plot_data.columns = ['Value', 'Group']
+
+    # Define colors and labels for groups
+    colors = ['#4878CF', '#6B4C9A', '#FF69B4', '#FF8C69']
+    labels = ['noNP_day1', 'NPD_day1', 'noNP_day3', 'NPD_day3']
+
+    # Create box plot
+    ax = sns.boxplot(x='Group', y='Value', data=plot_data, width=0.5,
+                    palette=colors,
+                    showfliers=False,  # Hide outlier points
+                    medianprops=dict(color="black"),  # Black median line
+                    boxprops=dict(alpha=0.7),  # Slightly transparent boxes
+                    whiskerprops=dict(linewidth=1.5),  # Thicker whiskers
+                    capprops=dict(linewidth=1.5))  # Thicker caps
+
+    # Add individual points
+    sns.stripplot(x='Group', y='Value', data=plot_data,
+                 size=8, color='black', alpha=0.6,
+                 jitter=0.2, ax=ax)
+
+    # Remove x-axis ticks and labels completely
+    ax.set_xticks([])  # Remove x ticks
+    ax.set_xticklabels([])  # Remove x tick labels
+    ax.set_xlabel('')  # Remove x label
+
+    # Customize y-axis
+    ax.set_ylabel(ylabel, fontsize=40, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=18)
+
+    # Remove top and right spines
+    sns.despine(top=True, right=True)
+
+    # Add significance bars with compact spacing
+    y_max = plot_data['Value'].max()
+    y_range = plot_data['Value'].max() - plot_data['Value'].min()
+
+    # Add significance stars with tighter spacing
+    if p_values['day1'] is not None:
+        add_significance_stars(p_values['day1'], ax, 0, 1,
+                             y_max + y_range * 0.05,
+                             y_range * 0.03)
+    if p_values['day3'] is not None:
+        add_significance_stars(p_values['day3'], ax, 2, 3,
+                             y_max + y_range * 0.05,
+                             y_range * 0.03)
+
+    # Add legend with colored dots
+    legend_elements = [Line2D([0], [0], marker='o', color='w',
+                            markerfacecolor=color, markersize=10,
+                            label=label)
+                      for color, label in zip(colors, labels)]
+
+    ax.legend(handles=legend_elements,
+             loc='center left',
+             bbox_to_anchor=(1.05, 0.5),
+             frameon=False,
+             fontsize=24)
+
+    # Adjust layout to accommodate legend
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.85)
+
+    # Save plot
+    plt.savefig(os.path.join(output_dir, filename),
+                dpi=300,
+                bbox_inches='tight',
+                format='tiff')
+    plt.close()
+
+# Updated function to perform Mann-Whitney U test and create plot
+def analyze_and_plot(mean_df, metric, metric_label):
+    # Perform Mann-Whitney U test
+    day1_noNP = mean_df[mean_df['Group'] == 'noNP_day1'][f'{metric}_mean_1']
+    day1_NPD = mean_df[mean_df['Group'] == 'NPD_day1'][f'{metric}_mean_1']
+    day3_noNP = mean_df[mean_df['Group'] == 'noNP_day3'][f'{metric}_mean_1']
+    day3_NPD = mean_df[mean_df['Group'] == 'NPD_day3'][f'{metric}_mean_1']
+
+    p_values = {'day1': None, 'day3': None}
+
+    # Debug information
+    print(f"\nDebug info for metric: {metric_label}")
+    print(f"noNP_day1 count: {len(day1_noNP)}")
+    print(f"NPD_day1 count: {len(day1_NPD)}")
+    print(f"noNP_day3 count: {len(day3_noNP)}")
+    print(f"NPD_day3 count: {len(day3_NPD)}")
+
+    # Perform tests only if both groups have data
+    if len(day1_noNP) > 0 and len(day1_NPD) > 0:
+        _, p_values['day1'] = stats.mannwhitneyu(day1_noNP, day1_NPD, alternative='two-sided')
+    else:
+        print("Warning: Not enough data for day1 comparison")
+
+    if len(day3_noNP) > 0 and len(day3_NPD) > 0:
+        _, p_values['day3'] = stats.mannwhitneyu(day3_noNP, day3_NPD, alternative='two-sided')
+    else:
+        print("Warning: Not enough data for day3 comparison")
+
+    # Create and save the plot only if we have data
+    if any(p_values.values()):
+        filename = f"{sanitize_filename(metric_label)}.tiff"
+        create_improved_box_plot(mean_df, metric, metric_label, filename, p_values)
+    else:
+        print(f"Skipping plot creation for {metric_label} due to insufficient data")
+
+    return p_values
+
+# Function to sanitize file names
+def sanitize_filename(name):
+    return name.replace(" ", "_").replace("(", "").replace(")", "").replace("/", "").replace("µ", "u")
+
+# Create a directory to save individual plots if it doesn't exist
+output_dir = '/content/drive/MyDrive/nellie_output_plot/nellie_output_Boxplot_R1'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
+# Add the new create_combined_plot function
+def create_combined_plot(output_dir, metrics):
+    fig = plt.figure(figsize=(30, 12))  # Adjusted figure size for 2 rows and 5 columns
+    gs = gridspec.GridSpec(2, 5, figure=fig, hspace=0.4, wspace=0.3)
+
+    for i, (metric, metric_label) in enumerate(metrics.items()):
+        ax = fig.add_subplot(gs[i // 5, i % 5])  # Changed from (i // 2, i % 2) to (i // 5, i % 5)
+
+        # Read the individual plot image
+        img_path = os.path.join(output_dir, f'{sanitize_filename(metric_label)}.tiff')
+        if os.path.exists(img_path):
+            img = mpimg.imread(img_path)
+            ax.imshow(img)
+            ax.axis('off')
+            ax.set_title(metric_label, fontsize=16, pad=20)
+        else:
+            ax.text(0.5, 0.5, f"Image not found for {metric_label}",
+                    ha='center', va='center', transform=ax.transAxes)
+            ax.axis('off')
+
+    plt.tight_layout()
+    combined_plot_path = os.path.join(output_dir, 'combined_plot.tiff')
+    plt.savefig(combined_plot_path, format='tiff', dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Combined plot saved as {combined_plot_path}")
+
+
+# Main execution
+if __name__ == "__main__":
+    # Read data
+    df = read_data(file_paths)
+
+    if df is not None:
+        print("Data reading successful. Shape of dataframe:", df.shape)
+        print("Unique groups found:", df['Group'].unique())
+
+        # Ensure the 'Group' column is categorical in df with the correct order
+        df['Group'] = pd.Categorical(df['Group'], categories=['noNP_day1', 'NPD_day1', 'noNP_day3', 'NPD_day3'], ordered=True)
+
+        # Group data by file and compute mean of each metric
+        mean_df = calculate_mean_by_file(df, metrics)
+
+        print("Shape of mean_df:", mean_df.shape)
+        print("Unique groups in mean_df:", mean_df['Group'].unique())
+
+        # Ensure the 'Group' column in mean_df is categorical with the correct order
+        mean_df['Group'] = pd.Categorical(mean_df['Group'], categories=['noNP_day1', 'NPD_day1', 'noNP_day3', 'NPD_day3'], ordered=True)
+
+        # Sort the dataframe by the ordered Group column
+        mean_df = mean_df.sort_values('Group')
+
+        # Analyze and plot each metric
+        for metric, metric_label in metrics.items():
+            p_values = analyze_and_plot(mean_df, metric, metric_label)
+            print(f"Metric: {metric_label}")
+            if p_values['day1'] is not None:
+                print(f"p-value (day1): {p_values['day1']:.4f}")
+            else:
+                print("p-value (day1): Not available")
+            if p_values['day3'] is not None:
+                print(f"p-value (day3): {p_values['day3']:.4f}")
+            else:
+                print("p-value (day3): Not available")
+            print()
+
+        print("All plots have been saved in the output directory.")
+        print("Note: Statistical comparisons use Mann-Whitney U test.")
+        print("Groups are ordered as: noNP_day1, NPD_day1, noNP_day3, NPD_day3")
+
+        # Create the combined plot
+        create_combined_plot(output_dir, metrics)
+    else:
+        print("Unable to proceed with analysis due to data reading errors.")
