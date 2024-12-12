@@ -1,0 +1,123 @@
+import napari
+import numpy as np
+import os
+import tifffile
+from napari.utils.notifications import show_info
+from nellie.im_info.verifier import FileInfo, ImInfo
+from qtpy.QtWidgets import QFileDialog
+
+def split_and_save_channels(viewer, file_path):
+    print(f"Processing file: {file_path}")  # Debug print
+    try:
+        # Create FileInfo object
+        file_info = FileInfo(file_path)
+        file_info.find_metadata()
+        file_info.load_metadata()
+
+        print(f"File info: axes={file_info.axes}, shape={file_info.shape}")  # Debug print
+        print(f"Dimension resolutions: {file_info.dim_res}")  # Debug print
+
+        # Load the image data
+        image_data = tifffile.imread(file_path)
+
+        print(f"Image data shape: {image_data.shape}")  # Debug print
+
+        # Ensure the data is in TCYX order
+        if file_info.axes != 'TCYX':
+            print(f"Rearranging axes from {file_info.axes} to TCYX")  # Debug print
+            show_info(f"Warning: Current axes order is {file_info.axes}. Attempting to rearrange to TCYX.")
+            # Create a mapping from the current axes to their positions
+            axis_to_index = {axis: i for i, axis in enumerate(file_info.axes)}
+            # Define the desired order
+            desired_order = 'TCYX'
+            # Create a list of axes to transpose
+            transpose_order = [axis_to_index[axis] for axis in desired_order if axis in axis_to_index]
+            # Rearrange the data
+            image_data = np.transpose(image_data, transpose_order)
+            file_info.change_axes('TCYX')
+
+        print(f"Rearranged image data shape: {image_data.shape}")  # Debug print
+
+        # Create new layers for channel 0, channel 4, and channel 5
+        new_layers_data = []
+        for channel in [0, 4, 5]:
+            if channel < image_data.shape[file_info.axes.index('C')]:
+                # Extract the specific channel
+                channel_data = image_data[:, channel:channel+1, :, :]
+                new_layers_data.append(channel_data)
+                print(f"Extracted channel {channel}, shape: {channel_data.shape}")  # Debug print
+
+        # Define the output directory
+        output_dir = r"I:\nellie_test_r2\day1"  # Updated output directory
+
+        # Ensure the output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Get the original file name and remove any file extension
+        base_layer_name = os.path.splitext(os.path.basename(file_path))[0]
+
+        # Prepare scale values, replacing None or 0 with 1.0
+        scale = [file_info.dim_res.get(ax, 1.0) or 1.0 for ax in 'TYX']
+        print(f"Scale values: {scale}")  # Debug print
+
+        # Add new layers to the viewer and save them as OME-TIFF
+        for i, channel_data in enumerate(new_layers_data):
+            channel_index = [0, 4, 5][i]  # Get the original channel index
+            new_layer_name = f'{base_layer_name}_channel_{channel_index}'
+
+            print(f"Adding new layer: {new_layer_name}")  # Debug print
+
+            # Add the new layer to the viewer
+            new_layer = viewer.add_image(
+                channel_data,
+                name=new_layer_name,
+                scale=scale,
+                metadata=file_info.metadata
+            )
+
+            # Construct the output file path
+            output_file = os.path.join(output_dir, f"{new_layer_name}.ome.tiff")
+
+            print(f"Saving OME-TIFF: {output_file}")  # Debug print
+
+            # Save the image data as a multipage OME-TIFF
+            tifffile.imwrite(
+                output_file,
+                channel_data,
+                photometric='minisblack',
+                metadata={
+                    'axes': 'TCYX',
+                    'TimeIncrement': file_info.dim_res.get('T', 1.0) or 1.0,
+                    'PhysicalSizeX': file_info.dim_res.get('X', 1.0) or 1.0,
+                    'PhysicalSizeY': file_info.dim_res.get('Y', 1.0) or 1.0
+                }
+            )
+
+        show_info(f"Created new layers for channels 0, 4, and 5 and saved them as OME-TIFF files in {output_dir}")
+        print("File processing completed successfully")  # Debug print
+
+    except Exception as e:
+        print(f"An error occurred while processing {file_path}: {str(e)}")  # Debug print
+        show_info(f"An error occurred while processing {file_path}: {str(e)}")
+
+def process_multiple_files(viewer):
+    # Open file dialog to choose multiple files
+    file_paths, _ = QFileDialog.getOpenFileNames(None, "Select files to process", "", "Image files (*.tif *.tiff *.ome.tiff)")
+
+    if not file_paths:
+        print("No files selected. Ending processing.")
+        return
+
+    for file_path in file_paths:
+        split_and_save_channels(viewer, file_path)
+
+    print("All selected files have been processed.")
+
+# Usage in Napari
+if __name__ == "__main__":
+    viewer = napari.current_viewer()
+    if viewer is None:
+        print("No current viewer found. Creating a new viewer.")
+        viewer = napari.Viewer()
+    process_multiple_files(viewer)
+    napari.run()
