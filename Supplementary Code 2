@@ -1,0 +1,356 @@
+# Standard library imports
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+import matplotlib.font_manager as fm
+from matplotlib.lines import Line2D
+import glob
+from tqdm import tqdm  # For progress bars
+import warnings
+warnings.filterwarnings('ignore')  # Suppress warnings
+
+# Constants
+LASER_FREQUENCY = 80e6  # 80 MHz
+
+# Base paths
+MAIN_FOLDERS = [
+    '/content/drive/MyDrive/phasor_plot_lifetime_test/phasor_plot_lifetime_test_r1',
+    '/content/drive/MyDrive/phasor_plot_lifetime_test/phasor_plot_lifetime_test_r2',
+    '/content/drive/MyDrive/phasor_plot_lifetime_test/phasor_plot_lifetime_test_r3'
+]
+
+# Try to set Arial font, fall back to default if not available
+try:
+    arial_font_path = '/content/drive/MyDrive/arial/ARIAL.TTF'
+    if os.path.exists(arial_font_path):
+        fm.fontManager.addfont(arial_font_path)
+        plt.rcParams['font.family'] = 'Arial'
+        plt.rcParams['font.sans-serif'] = 'Arial'
+    else:
+        print("Arial font not found, using default font")
+except Exception as e:
+    print(f"Could not load Arial font: {e}")
+    print("Using default font")
+
+def save_plot_as_tiff(plt, filename, folder_path, dpi=300):
+    """Save the current matplotlib plot as a TIFF file."""
+    os.makedirs(folder_path, exist_ok=True)
+    full_path = os.path.join(folder_path, f"{filename}.tiff")
+    plt.savefig(full_path, format='tiff', dpi=dpi, bbox_inches='tight')
+    print(f"Plot saved as TIFF: {full_path}")
+    plt.close()
+
+def gs_to_lifetime_multi(G, S, omega):
+    """Convert G and S coordinates to lifetime for multi-exponential decay."""
+    valid_mask = (G != 0) & (S != 0)
+    if not np.any(valid_mask):
+        return 0
+
+    valid_G = G[valid_mask]
+    valid_S = S[valid_mask]
+
+    G_lower, G_upper = np.percentile(valid_G, [2.5, 97.5])
+    S_lower, S_upper = np.percentile(valid_S, [2.5, 97.5])
+
+    G_filtered = valid_G[(valid_G >= G_lower) & (valid_G <= G_upper)]
+    S_filtered = valid_S[(valid_S >= S_lower) & (valid_S <= S_upper)]
+
+    mean_G = np.mean(G_filtered)
+    mean_S = np.mean(S_filtered)
+
+    denominator = mean_G**2 + mean_S**2
+    numerator = 1 - mean_G**2 - mean_S**2
+
+    if denominator <= 0 or numerator <= 0:
+        return 0
+
+    lifetime = (1 / omega) * np.sqrt(numerator / denominator) * 1e9
+
+    if lifetime < 0.1 or lifetime > 4:
+        return 0
+
+    return lifetime
+
+def mann_whitney_test(group1, group2):
+    """Perform Mann-Whitney U test and return p-value."""
+    # Check if both groups have data
+    if len(group1) == 0 or len(group2) == 0:
+        return None  # Return None if either group is empty
+    try:
+        statistic, p_value = stats.mannwhitneyu(group1, group2, alternative='two-sided')
+        return p_value
+    except Exception as e:
+        print(f"Warning: Could not perform statistical test: {e}")
+        return None
+
+def add_significance_stars(p_value, ax, x1, x2, y, h):
+    """Add significance stars to the plot."""
+    ax.plot([x1, x1, x2, x2], [y, y+h, y+h, y], lw=1, c='black')
+    stars = '***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else 'ns'
+    ax.text((x1+x2)*.5, y+h, stars, ha='center', va='bottom', fontsize=24)
+
+def create_boxplot(data_dict, output_path, title):
+    """Create box plot with four groups."""
+    plt.figure(figsize=(6, 8))
+
+    # Prepare data for plotting
+    groups = ['noNP_day1', 'NPD_day1', 'noNP_day3', 'NPD_day3']
+    plot_data = []
+
+    # Filter and validate data
+    valid_data = {}
+    for group in groups:
+        valid_values = [value for value in data_dict[group] if value > 0]
+        valid_data[group] = valid_values
+        for value in valid_values:
+            plot_data.append({'Group': group, 'Value': value})
+
+    if not plot_data:
+        print(f"Warning: No valid data for {title}")
+        plt.close()
+        return
+
+    plot_df = pd.DataFrame(plot_data)
+
+    # Define colors and create box plot
+    colors = ['#5BC0EB', '#9B51E0', '#FF65A3', '#FF715B']
+    ax = sns.boxplot(x='Group', y='Value', data=plot_df,
+                    width=0.5, palette=colors,
+                    showfliers=False,
+                    medianprops=dict(color="black", linewidth=1.5),
+                    boxprops=dict(alpha=0.7),
+                    whiskerprops=dict(linewidth=1.5),
+                    capprops=dict(linewidth=1.5))
+
+    # Add individual points
+    sns.stripplot(x='Group', y='Value', data=plot_df,
+                 size=8, color='black', alpha=0.6,
+                 jitter=0.2, ax=ax)
+
+    # Customize plot
+    ax.set_xticklabels([])
+    ax.set_xlabel('')
+    ax.set_ylabel('Mean lifetime (ns)', fontsize=40, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=18)
+    sns.despine(top=True, right=True)
+
+    # Calculate statistics only if we have enough data
+    day1_p = None
+    day3_p = None
+
+    # Day 1 statistics
+    if len(valid_data['noNP_day1']) > 0 and len(valid_data['NPD_day1']) > 0:
+        day1_p = mann_whitney_test(valid_data['noNP_day1'], valid_data['NPD_day1'])
+    else:
+        print(f"Warning: Not enough data for day1 statistical test in {title}")
+
+    # Day 3 statistics
+    if len(valid_data['noNP_day3']) > 0 and len(valid_data['NPD_day3']) > 0:
+        day3_p = mann_whitney_test(valid_data['noNP_day3'], valid_data['NPD_day3'])
+    else:
+        print(f"Warning: Not enough data for day3 statistical test in {title}")
+
+    # Add significance stars only if we have valid p-values
+    y_max = plot_df['Value'].max()
+    y_range = plot_df['Value'].max() - plot_df['Value'].min()
+
+    if day1_p is not None:
+        add_significance_stars(day1_p, ax, 0, 1, y_max + y_range * 0.05, y_range * 0.03)
+    if day3_p is not None:
+        add_significance_stars(day3_p, ax, 2, 3, y_max + y_range * 0.05, y_range * 0.03)
+
+    # Add legend
+    labels = ['noNP day1', 'NPD day1', 'noNP day3', 'NPD day3']
+    legend_elements = [Line2D([0], [0], marker='o', color='w',
+                            markerfacecolor=color, markersize=10,
+                            label=label)
+                      for color, label in zip(colors, labels)]
+
+    ax.legend(handles=legend_elements,
+             loc='center left',
+             bbox_to_anchor=(1.05, 0.5),
+             frameon=False,
+             fontsize=24)
+
+    plt.title(title, pad=20, fontsize=32)
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.85)
+
+    # Save plot
+    save_plot_as_tiff(plt, title, output_path)
+
+    # Print statistics summary
+    print(f"\nStatistics summary for {title}:")
+    for group in groups:
+        values = valid_data[group]
+        print(f"{group}: {len(values)} samples")
+        if values:
+            print(f"  Mean: {np.mean(values):.3f} ns")
+            print(f"  Median: {np.median(values):.3f} ns")
+            print(f"  Std: {np.std(values):.3f} ns")
+
+def process_folder(main_folder):
+    """Process a main folder and return lifetime data."""
+    lifetimes = {
+        'noNP_day1': [], 'NPD_day1': [],
+        'noNP_day3': [], 'NPD_day3': []
+    }
+
+    omega = 2 * np.pi * LASER_FREQUENCY
+
+    for day in ['day1', 'day3']:
+        # Skip day3 for r3 folder
+        if 'r3' in main_folder and day == 'day3':
+            print(f"Skipping day3 for {os.path.basename(main_folder)} as it's empty")
+            continue
+
+        day_path = os.path.join(main_folder, day)
+        if not os.path.exists(day_path):
+            print(f"Warning: {day_path} not found")
+            continue
+
+        # Process noNP folders
+        for i in tqdm(range(1, 16), desc=f"Processing {day} noNP"):
+            # Try both uppercase and lowercase variations
+            folder_patterns = [
+                os.path.join(day_path, f'noNP_{i}.sptw'),
+                os.path.join(day_path, f'NoNP_{i}.sptw')
+            ]
+
+            for folder_pattern in folder_patterns:
+                if os.path.exists(folder_pattern):
+                    # Try both uppercase and lowercase variations in filename
+                    file_patterns = [
+                        f'noNP_{i}_features_bin1_thresh10.csv',
+                        f'NoNP_{i}_features_bin1_thresh10.csv'
+                    ]
+
+                    for file_pattern in file_patterns:
+                        file_path = os.path.join(folder_pattern, file_pattern)
+                        if os.path.exists(file_path):
+                            try:
+                                df = pd.read_csv(file_path)
+                                lifetime = gs_to_lifetime_multi(
+                                    df['G'].values,
+                                    df['S'].values,
+                                    omega
+                                )
+                                if lifetime > 0:
+                                    lifetimes[f'noNP_{day}'].append(lifetime)
+                                    print(f"Processed {file_path}, lifetime: {lifetime:.3f} ns")
+                            except Exception as e:
+                                print(f"Error processing {file_path}: {e}")
+                            break
+                    break
+
+        # Process NPD folders
+        for i in tqdm(range(1, 16), desc=f"Processing {day} NPD"):
+            folder_path = os.path.join(day_path, f'NPD_{i}.sptw')
+            if os.path.exists(folder_path):
+                file_path = os.path.join(folder_path, f'NPD_{i}_features_bin1_thresh10.csv')
+                if os.path.exists(file_path):
+                    try:
+                        df = pd.read_csv(file_path)
+                        lifetime = gs_to_lifetime_multi(
+                            df['G'].values,
+                            df['S'].values,
+                            omega
+                        )
+                        if lifetime > 0:
+                            lifetimes[f'NPD_{day}'].append(lifetime)
+                            print(f"Processed {file_path}, lifetime: {lifetime:.3f} ns")
+                    except Exception as e:
+                        print(f"Error processing {file_path}: {e}")
+
+    return lifetimes
+
+def main():
+    print("Starting analysis...")
+    print("\nChecking access to Google Drive...")
+
+    # Verify access to main folders
+    for folder in MAIN_FOLDERS:
+        if os.path.exists(folder):
+            print(f"✓ Found {os.path.basename(folder)}")
+        else:
+            print(f"✗ Cannot access {folder}")
+            raise Exception(f"Required folder not found: {folder}")
+
+    # Create output directory
+    output_base = '/content/drive/MyDrive/phasor_plot_lifetime_test/plots'
+    os.makedirs(output_base, exist_ok=True)
+    print(f"\nOutput will be saved to: {output_base}")
+
+    # Dictionary to store all lifetimes
+    all_lifetimes = {
+        'noNP_day1': [], 'NPD_day1': [],
+        'noNP_day3': [], 'NPD_day3': []
+    }
+
+    # Process each main folder
+    for folder in tqdm(MAIN_FOLDERS, desc="Processing main folders"):
+        print(f"\nProcessing {os.path.basename(folder)}...")
+        folder_lifetimes = process_folder(folder)
+
+        # Create individual plot for this folder
+        create_boxplot(
+            folder_lifetimes,
+            output_base,
+            f"Lifetime Distribution - {os.path.basename(folder)}"
+        )
+
+        # Accumulate data for combined plot
+        for group in all_lifetimes:
+            all_lifetimes[group].extend(folder_lifetimes[group])
+
+        # Print intermediate results
+        print(f"\nIntermediate results for {os.path.basename(folder)}:")
+        for group in folder_lifetimes:
+            values = [v for v in folder_lifetimes[group] if v > 0]
+            print(f"{group}: {len(values)} samples, mean: {np.mean(values):.3f} ns")
+
+    # Create combined plot
+    print("\nCreating combined plot...")
+    create_boxplot(
+        all_lifetimes,
+        output_base,
+        "Combined Lifetime Distribution"
+    )
+
+    # Save data to CSV
+    print("\nSaving data to CSV...")
+    df_data = []
+    for group in all_lifetimes:
+        for lifetime in all_lifetimes[group]:
+            df_data.append({
+                'Group': group,
+                'Lifetime': lifetime
+            })
+
+    df = pd.DataFrame(df_data)
+    csv_path = os.path.join(output_base, 'lifetime_data.csv')
+    df.to_csv(csv_path, index=False)
+
+    # Print summary statistics
+    print("\nFinal Summary Statistics:")
+    for group in all_lifetimes:
+        values = [v for v in all_lifetimes[group] if v > 0]
+        print(f"\n{group}:")
+        print(f"  Number of samples: {len(values)}")
+        if values:
+            print(f"  Mean lifetime: {np.mean(values):.3f} ns")
+            print(f"  Median lifetime: {np.median(values):.3f} ns")
+            print(f"  Std deviation: {np.std(values):.3f} ns")
+
+    print(f"\nAnalysis complete! Results saved to {output_base}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"\nError during execution: {str(e)}")
+        import traceback
+        traceback.print_exc()
