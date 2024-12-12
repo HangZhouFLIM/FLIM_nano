@@ -1,0 +1,353 @@
+import napari
+import numpy as np
+import os
+import pandas as pd
+import napari_flim_phasor_plotter
+from magicgui import magicgui
+from napari_flim_phasor_plotter._widget import apply_binning_widget, make_flim_phasor_plot
+from qtpy.QtWidgets import QTableWidget, QTableWidgetItem, QFileDialog
+from shapely.geometry import Polygon, Point
+import csv
+
+def patched_activate_property_autoupdate(self):
+    if self.last_connected is not None:
+        try:
+            if hasattr(self.last_connected.events, 'properties'):
+                self.last_connected.events.properties.disconnect(self.update_axes_and_clustering_id_lists)
+            elif hasattr(self.last_connected.events, 'data'):
+                self.last_connected.events.data.disconnect(self.update_axes_and_clustering_id_lists)
+        except Exception as e:
+            print(f"Warning: Could not disconnect from previous layer: {str(e)}")
+
+    if not isinstance(self.layer_select.value, napari.layers.Image):
+        try:
+            if hasattr(self.layer_select.value.events, 'properties'):
+                self.layer_select.value.events.properties.connect(self.update_axes_and_clustering_id_lists)
+            elif hasattr(self.layer_select.value.events, 'data'):
+                self.layer_select.value.events.data.connect(self.update_axes_and_clustering_id_lists)
+        except Exception as e:
+            print(f"Warning: Could not connect to new layer: {str(e)}")
+
+    self.last_connected = self.layer_select.value
+
+# Apply the monkey-patch
+napari_flim_phasor_plotter._plotting.PhasorPlotterWidget.activate_property_autoupdate = patched_activate_property_autoupdate
+
+viewer = napari.current_viewer()
+base_name = None
+file_path = None
+
+@magicgui(call_button="Open PTU File")
+def open_ptu_file():
+    global base_name, file_path
+
+    # Open file dialog for selecting PTU file
+    filename, _ = QFileDialog.getOpenFileName(viewer.window._qt_window, "Select PTU File", "", "PTU Files (*.ptu)")
+
+    if not filename:
+        print("No file selected.")
+        return
+
+    # Safely remove existing layers and disconnect event handlers
+    for layer in viewer.layers[:]:
+        if hasattr(layer, 'events') and hasattr(layer.events, 'disconnect'):
+            try:
+                layer.events.disconnect()
+            except Exception as e:
+                print(f"Warning: Could not disconnect events for layer {layer.name}: {str(e)}")
+        viewer.layers.remove(layer)
+
+    # Clear any remaining layers
+    viewer.layers.clear()
+
+    # Open the selected file
+    try:
+        viewer.open(filename, plugin="napari-flim-phasor-plotter")
+    except Exception as e:
+        print(f"Error opening file: {str(e)}")
+        return
+
+    base_name = os.path.splitext(os.path.basename(filename))[0]
+    file_path = os.path.dirname(filename)
+    target_layer_name = f"{base_name}"  # Modified as requested
+
+    for layer in viewer.layers:
+        if layer.name == target_layer_name:
+            viewer.layers.selection.active = layer
+            break
+
+    if 'Shapes' not in viewer.layers:
+        viewer.add_shapes(name='Shapes')
+
+    print(f"Opened file: {filename}")
+    print(f"Base name: {base_name}")
+    print(f"File path: {file_path}")
+    print("Please proceed with 'Crop from Shapes' if needed, then 'Process and Export'.")
+
+import napari
+import numpy as np
+import os
+from shapely.geometry import Polygon, Point
+from magicgui import magicgui
+
+@magicgui(call_button="Crop from Shapes")
+def crop_from_shapes():
+    shapes_layer = viewer.layers['Shapes']
+    if len(shapes_layer.data) == 0:
+        print("No shapes found. Please draw a shape before cropping.")
+        return
+
+    target_layer_name = f"{base_name}"
+    target_layer = next((layer for layer in viewer.layers if layer.name == target_layer_name), None)
+
+    if target_layer is None:
+        print(f"Target layer '{target_layer_name}' not found. Please make sure the file is loaded correctly.")
+        return
+
+    if not isinstance(target_layer, napari.layers.Image):
+        print(f"Layer '{target_layer_name}' is not an Image layer. Cannot proceed with cropping.")
+        return
+
+    try:
+        # Get the polygon coordinates and create polygon object
+        shape = shapes_layer.data[0]
+
+        # Get x,y coordinates
+        xy_coords = shape[:, -2:]  # Original napari coordinates (x,y)
+
+        # Unflip the coordinates (transform back from diagonal flip)
+        img_height = target_layer.data.shape[-2]  # Get height of the image
+        img_width = target_layer.data.shape[-1]   # Get width of the image
+
+        # Create unflipped coordinates
+        unflipped_coords = np.zeros_like(xy_coords)
+        unflipped_coords[:, 0] = xy_coords[:, 1]  # x = original y
+        unflipped_coords[:, 1] = xy_coords[:, 0]  # y = original x
+
+        # Create polygon with unflipped coordinates
+        polygon = Polygon(unflipped_coords)
+
+        # Get image dimensions
+        img_shape = target_layer.data.shape
+
+        # Calculate bounds to optimize the area we need to check
+        minx, miny, maxx, maxy = polygon.bounds
+        minx, miny = max(0, int(np.floor(minx))), max(0, int(np.floor(miny)))
+        maxx, maxy = min(img_shape[-1], int(np.ceil(maxx))), min(img_shape[-2], int(np.ceil(maxy)))
+
+        # Create 2D mask for the spatial dimensions
+        spatial_mask = np.zeros((img_shape[-2], img_shape[-1]), dtype=bool)
+
+        # Create points only for the bounded region to improve performance
+        for y in range(miny, maxy):
+            for x in range(minx, maxx):
+                if polygon.contains(Point(x, y)):
+                    spatial_mask[y, x] = True
+
+        # Expand mask to match 5D shape of the FLIM data
+        expanded_mask = spatial_mask[np.newaxis, np.newaxis, np.newaxis, :, :]
+
+        # Apply mask to create masked data
+        masked_data = target_layer.data * expanded_mask
+
+        print(f"Mask shape after expansion: {expanded_mask.shape}")
+        print(f"Image shape: {target_layer.data.shape}")
+        print(f"Masked data shape: {masked_data.shape}")
+
+        # Add the masked data as a new layer
+        viewer.add_image(
+            masked_data,
+            name=f"{target_layer.name}_cropped",
+            scale=target_layer.scale,
+            translate=target_layer.translate,
+            metadata=target_layer.metadata
+        )
+        print("Cropping successful. New layer added with exact polygon shape.")
+
+    except Exception as e:
+        print(f"An error occurred during cropping: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+@magicgui(call_button="Process and Export")
+def process_and_export():
+    global base_name, file_path
+    print("Starting process_and_export function")
+
+    # Calculate and export shape area
+    shapes_layer = viewer.layers['Shapes']
+    if len(shapes_layer.data) == 0:
+        print("No shapes found. Please draw a shape before processing.")
+        return
+
+    shape_data = shapes_layer.data[0]
+    print(f"Shape data structure: {shape_data.shape}")
+    print(f"Shape data type: {shape_data.dtype}")
+    print(f"First few rows of shape data:\n{shape_data[:5]}")
+
+    # Try to determine the correct columns for x and y coordinates
+    if shape_data.shape[1] >= 2:
+        xy_coords = shape_data[:, -2:]  # Assume last two columns are x and y
+    else:
+        print("Shape data doesn't have enough columns for x and y coordinates.")
+        return
+
+    print(f"Extracted xy_coords shape: {xy_coords.shape}")
+    print(f"First few xy coordinates:\n{xy_coords[:5]}")
+
+    try:
+        polygon = Polygon(xy_coords)
+        area_pixels = polygon.area
+    except Exception as e:
+        print(f"Error calculating area: {str(e)}")
+        print("Coordinates may be invalid. Please check the shape.")
+        return
+
+    print(f"Successfully calculated area: {area_pixels:.2f} pixels^2")
+
+    area_csv_filename = os.path.join(file_path, f"{base_name}_Shapes_area.csv")
+    try:
+        with open(area_csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(['PTU Filename', base_name])
+            csv_writer.writerow(['Area (pixels^2)', area_pixels])
+            csv_writer.writerow([])
+            csv_writer.writerow(['X', 'Y'])
+            for coord in xy_coords:
+                csv_writer.writerow(coord)
+
+        print(f"Shape area results saved to: {area_csv_filename}")
+        print(f"Area of the shape: {area_pixels:.2f} pixels^2")
+        print(f"Number of coordinate points: {len(xy_coords)}")
+    except Exception as e:
+        print(f"Error saving area results to CSV: {str(e)}")
+
+    # Function to apply binning and calculate phasors
+    def apply_binning_and_phasors(bin_size, threshold, median_n):
+        cropped_layer_name = f"{base_name}_cropped"
+        cropped_layer = next((layer for layer in viewer.layers if layer.name == cropped_layer_name), None)
+
+        if cropped_layer is None:
+            print(f"Cropped layer '{cropped_layer_name}' not found. Please crop the image first.")
+            return None
+
+        print(f"Creating binning widget with bin_size={bin_size}")
+        binning_widget = apply_binning_widget()
+        binning_widget.image_layer.value = cropped_layer
+        binning_widget.bin_size.value = bin_size
+
+        if hasattr(binning_widget, 'binning_3d'):
+            binning_widget.binning_3d.value = True
+        elif hasattr(binning_widget, 'binning_3D'):
+            binning_widget.binning_3D.value = True
+        else:
+            print("Warning: Could not set 3D binning option. The attribute may have been renamed.")
+
+        print("Running binning")
+        try:
+            binned_layer = binning_widget()
+        except Exception as e:
+            print(f"Error during binning: {str(e)}")
+            return None
+
+        print("Creating phasor widget")
+        phasor_widget = make_flim_phasor_plot()
+        phasor_widget.image_layer.value = binned_layer
+        phasor_widget.laser_frequency.value = 80
+        phasor_widget.harmonic.value = 1
+        phasor_widget.threshold.value = threshold
+        phasor_widget.apply_median.value = True
+        phasor_widget.median_n.value = median_n
+
+        print("Calculating phasors")
+        try:
+            phasor_widget()
+        except Exception as e:
+            print(f"Error during phasor calculation: {str(e)}")
+            return None
+
+        phasor_layer_name = f"Labelled_pixels_from_{base_name}_cropped binned {bin_size}"
+        phasor_layer = next((layer for layer in viewer.layers if layer.name == phasor_layer_name), None)
+
+        if phasor_layer is None:
+            print(f"Phasor layer '{phasor_layer_name}' not found. Phasor calculation may have failed.")
+            print("Available layers:")
+            for layer in viewer.layers:
+                print(f"- {layer.name}")
+            return None
+
+        return phasor_layer.features
+
+    # Process with single set of parameters
+    print("Processing with bin_size=1, threshold=10, median_n=10")
+    features_table = apply_binning_and_phasors(bin_size=1, threshold=10, median_n=10)
+    if features_table is not None:
+        csv_filename = os.path.join(file_path, f"{base_name}_features_bin1_thresh10.csv")
+        features_table.to_csv(csv_filename, index=False)
+        print(f"Features table saved to {csv_filename}")
+        display_features_table(features_table)
+
+    print("Processing complete. Features table saved as CSV file.")
+
+    # Reset phasor plotter state and clear layers
+    reset_phasor_plotter()
+    clear_layers()
+
+    print("You can now open a new PTU file to process.")
+
+def display_features_table(features_table):
+    # Remove old feature table widget if it exists
+    dock_widgets = list(viewer.window._dock_widgets.values())
+    for widget in dock_widgets:
+        if hasattr(widget, 'name') and widget.name == 'Features Table':
+            viewer.window.remove_dock_widget(widget)
+
+    # Display new features table
+    table_widget = QTableWidget()
+    table_widget.setColumnCount(len(features_table.columns))
+    table_widget.setRowCount(len(features_table))
+    table_widget.setHorizontalHeaderLabels(features_table.columns)
+
+    for row in range(len(features_table)):
+        for col in range(len(features_table.columns)):
+            item = QTableWidgetItem(str(features_table.iloc[row, col]))
+            table_widget.setItem(row, col, item)
+
+    viewer.window.add_dock_widget(table_widget, area='right', name='Features Table')
+
+def reset_phasor_plotter():
+    for widget in viewer.window._dock_widgets.values():
+        if isinstance(widget.widget(), napari_flim_phasor_plotter._plotting.PhasorPlotterWidget):
+            plotter_widget = widget.widget()
+            plotter_widget.last_connected = None
+            if hasattr(plotter_widget, 'layer_select') and plotter_widget.layer_select.choices:
+                plotter_widget.layer_select.value = plotter_widget.layer_select.choices[0]
+
+            # Safely disconnect all event handlers
+            if hasattr(plotter_widget, 'events'):
+                for event_emitter in plotter_widget.events.emitters.values():
+                    try:
+                        event_emitter.disconnect()
+                    except Exception as e:
+                        print(f"Warning: Could not disconnect event emitter: {str(e)}")
+
+    print("Phasor plotter state reset.")
+
+def clear_layers():
+    # Clear all layers except the current one
+    current_layer = viewer.layers.selection.active
+    layers_to_remove = [layer for layer in viewer.layers if layer != current_layer]
+    for layer in layers_to_remove:
+        viewer.layers.remove(layer)
+
+    # Reset global variables
+    global base_name, file_path
+    base_name = None
+    file_path = None
+
+# Add the widgets to the viewer
+viewer.window.add_dock_widget(open_ptu_file, area='right')
+viewer.window.add_dock_widget(crop_from_shapes, area='right')
+viewer.window.add_dock_widget(process_and_export, area='right')
+
+print("Widgets added. Use 'Open PTU File' to load, 'Crop from Shapes' to crop, and 'Process and Export' to bin, calculate phasors, display features table, and save as CSV.")
