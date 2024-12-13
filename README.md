@@ -1,14 +1,14 @@
 # FLIM_nano
 
-## Supplementary Code 1 and Code 2 are for Phasor plot analysis of mitochondrial polarization in organoids
+# Supplementary Code 1 and Code 2 are for Phasor plot analysis of mitochondrial polarization in organoids
 
 PTU files and exported CSV files for phasor plot analysis of mitochondrial polarization in organoids are available on Zenodo (https://zenodo.org/records/14417182).
 
-## Instructions for Supplementary Code 1
+# Instructions for Supplementary Code 1
 
 Follow the steps below to set up the environment and run the **Supplementary Code 1**.
 
-### 1. Install Miniforge
+# 1. Install Miniforge
 
 Download and install Miniforge from the [Miniforge GitHub repository](https://github.com/conda-forge/miniforge).
 
