@@ -47,8 +47,8 @@ def split_and_save_channels(viewer, file_path):
                 new_layers_data.append(channel_data)
                 print(f"Extracted channel {channel}, shape: {channel_data.shape}")  # Debug print
 
-        # Define the output directory
-        output_dir = r"I:\nellie_test_r2\day1"  # Updated output directory
+        # Define the output directory as the same folder that contains the input file
+        output_dir = os.path.dirname(file_path)
 
         # Ensure the output directory exists
         os.makedirs(output_dir, exist_ok=True)
