@@ -53,6 +53,12 @@ pip install tifffile  lxml
 In Napari, open the console from the menu: View -> Console.
 Paste the Supplementary Code 3 into the console and press Enter to run it.  
 
+
+
+https://github.com/user-attachments/assets/d009cf9f-7415-467a-8fb1-3efe97108212
+
+
+
 ## Instructions for Supplementary Code 4
 Multiple-files running with Nellie.
 
