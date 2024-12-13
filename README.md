@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/98079d30-7609-48b9-b131-6d120adb5a8a
 
 ## Instructions for Supplementary Code 2
 
-download the data from Zenodo (https://zenodo.org/records/14417182), run this code in jupter notebook or google colab after change the file path to your folder.
+download the data from Zenodo (https://zenodo.org/records/14417182), run this code to get plots in jupter notebook or google colab after change the file path to your folder.
 
 ## Supplementary Code 3, Code 4 and Code 5 are for mitochondrial dynamics and morphology analysis
 
