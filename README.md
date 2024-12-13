@@ -12,7 +12,7 @@ Follow the steps below to set up the environment and run the **Supplementary Cod
 
 Download and install Miniforge from the [Miniforge GitHub repository](https://github.com/conda-forge/miniforge).
 
-## Create a new environment named 'napari-flim-phasor-env' with Python 3.9 from the [Miniforge GitHub repository](https://github.com/zoccoler/napari-flim-phasor-plotter)
+## Create a new environment named 'napari-flim-phasor-env' with Python 3.9 from the [Napari-flim-phasor-plotter GitHub repository](https://github.com/zoccoler/napari-flim-phasor-plotter)
 mamba create -n napari-flim-phasor-env python=3.9 napari pyqt git
 
 ## Activate the environment
