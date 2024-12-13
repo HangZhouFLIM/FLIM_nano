@@ -18,7 +18,7 @@ mamba create -n napari-flim-phasor-env python=3.9 napari pyqt git
 ## Activate the environment
 mamba activate napari-flim-phasor-env
 
-## Install All Optional Dependencies
+## Install All Dependencies
 pip install napari-flim-phasor-plotter shapely
 
 ## Start Napari
